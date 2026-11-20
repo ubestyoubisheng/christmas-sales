@@ -139,6 +139,12 @@ const actions = {
     if (error) throw error;
     return data;
   },
+  async shift_report(b, db) {
+    need(b);
+    const { data, error } = await db.rpc('api_shift_report', { p_shift_id: b.shift_id, p_hash: sha(b.token) });
+    if (error) throw error;
+    return data;
+  },
   async submit_closing(b, db) {
     need(b);
     const counts = (Array.isArray(b.counts) ? b.counts : []).slice(0, 200).map((c) => {
