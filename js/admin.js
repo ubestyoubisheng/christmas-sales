@@ -15,8 +15,10 @@
   async function boot() {
     let cfg; try { cfg = await (await fetch('/.netlify/functions/api?action=config')).json(); } catch (_) {}
     if (!cfg || !cfg.supabase_url || !cfg.supabase_anon_key) { $app.replaceChildren(h('p', { class: 'err' }, 'Server is missing SUPABASE_URL / SUPABASE_ANON_KEY. See README.')); return; }
-    sb = window.supabase.createClient(cfg.supabase_url, cfg.supabase_anon_key);
-    const { data } = await sb.auth.getSession(); user = data.session && data.session.user;
+    // Session lives in memory only: reloading or leaving this page always asks for the password again.
+    sb = window.supabase.createClient(cfg.supabase_url, cfg.supabase_anon_key, { auth: { persistSession: false, autoRefreshToken: true, detectSessionInUrl: false } });
+    user = null;
+    window.addEventListener('pageshow', (ev) => { if (ev.persisted) location.reload(); });
     sb.auth.onAuthStateChange((_e, s) => { const u = s && s.user; if ((u && u.id) !== (user && user.id)) { user = u; start(); } });
     start();
   }
@@ -25,14 +27,24 @@
     if (!user) return loginView();
     const { data } = await sb.from('admins').select('role').eq('user_id', user.id).maybeSingle();
     role = data && data.role;
-    if (!role) { $app.replaceChildren(h('div', { class: 'card' }, h('p', { class: 'err' }, 'This account is not an administrator.'), h('button', { class: 'sm', onclick: () => sb.auth.signOut() }, 'Sign out'))); return; }
+    if (!role) { $app.replaceChildren(h('div', { class: 'card' }, h('p', { class: 'err' }, 'This account is not an administrator.'), h('button', { class: 'sm', onclick: () => sb.auth.signOut({ scope: 'local' }) }, 'Sign out'))); return; }
     startLive(); show();
   }
   function loginView() {
-    const e = h('input', { type: 'email', placeholder: 'Email', autocomplete: 'username' }), p = h('input', { type: 'password', placeholder: 'Password', autocomplete: 'current-password' }), m = h('div', { class: 'msg err' });
-    const go = async () => { const { error } = await sb.auth.signInWithPassword({ email: e.value.trim(), password: p.value }); if (error) m.textContent = 'Sign-in failed.'; };
+    const p = h('input', { type: 'password', placeholder: 'Admin password', autocomplete: 'off' }), m = h('div', { class: 'msg err' });
+    const go = async () => {
+      m.textContent = '';
+      try {
+        const res = await fetch('/.netlify/functions/api', { method: 'POST', headers: { 'Content-Type': 'application/json' }, cache: 'no-store', body: JSON.stringify({ action: 'admin_login', password: p.value }) });
+        const d = await res.json().catch(() => ({}));
+        if (!res.ok) { m.textContent = d.message || 'Sign-in failed.'; p.value = ''; return; }
+        p.value = '';
+        const { error } = await sb.auth.setSession({ access_token: d.access_token, refresh_token: d.refresh_token });
+        if (error) m.textContent = 'Sign-in failed.';
+      } catch (_) { m.textContent = 'No connection.'; }
+    };
     p.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') go(); });
-    $app.replaceChildren(h('div', { class: 'card', style: 'max-width:380px;margin:40px auto' }, h('h1', {}, 'Admin sign-in'), e, h('div', { style: 'height:8px' }), p, h('button', { class: 'go', onclick: go }, 'Sign in'), m));
+    $app.replaceChildren(h('div', { class: 'card', style: 'max-width:380px;margin:40px auto' }, h('h1', {}, 'Admin sign-in'), p, h('div', { style: 'height:8px' }), h('button', { class: 'go', onclick: go }, 'Sign in'), m));
   }
 
   // ---- live updates: realtime first, polling as a fallback
@@ -51,7 +63,7 @@
     const body = h('div', {}); let view;
     try { view = await ({ overview: vOverview, sales: vSales, inventory: vInventory, shifts: vShifts, settings: vSettings, export: vExport, cleanup: vCleanup }[tab])(); } catch (e) { view = h('p', { class: 'err' }, e.message); }
     const y = window.scrollY;
-    $app.replaceChildren(h('div', { class: 'bar' }, h('h1', {}, 'Christmas Sales — Admin'), h('span', {}, h('span', { id: 'live', class: 'pill pending' }, ''), ' ', h('span', { class: 'mu' }, role + ' · ' + (user.email || '')), ' ', h('button', { class: 'sm s', onclick: () => sb.auth.signOut() }, 'Sign out'))),
+    $app.replaceChildren(h('div', { class: 'bar' }, h('h1', {}, 'Christmas Sales — Admin'), h('span', {}, h('span', { id: 'live', class: 'pill pending' }, ''), ' ', h('span', { class: 'mu' }, role + ' · ' + (user.email || '')), ' ', h('button', { class: 'sm s', onclick: () => sb.auth.signOut({ scope: 'local' }) }, 'Sign out'))),
       h('div', { class: 'tabs' }, TABS.map(([k, l]) => h('button', { class: 'sm' + (k === tab ? ' on' : ''), onclick: () => { tab = k; show(); } }, l))), h('div', { id: 'flash', class: 'msg' }), view);
     setLive(); window.scrollTo(0, y);
   }
