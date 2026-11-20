@@ -8,6 +8,11 @@ const crypto = require('crypto');
 const MAX_BODY = 32 * 1024;
 const RATE = { windowMs: 60_000, max: 240 };
 const hits = new Map();
+// Admin password attempts: stricter than the general limit (best-effort, per function instance).
+const LOGIN_FAILS = { windowMs: 15 * 60_000, max: 5 };
+const fails = new Map();
+const loginBlocked = (ip) => { const now = Date.now(); const h = (fails.get(ip) || []).filter((t) => now - t < LOGIN_FAILS.windowMs); fails.set(ip, h); return h.length >= LOGIN_FAILS.max; };
+const loginFailed = (ip) => { const h = fails.get(ip) || []; h.push(Date.now()); fails.set(ip, h); };
 
 const sha = (s) => crypto.createHash('sha256').update(String(s)).digest('hex');
 const isUuid = (v) => typeof v === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
@@ -49,6 +54,10 @@ const ERRORS = {
   invalid_cash_amount: [400, 'Invalid cash amount.'],
   invalid_time: [400, 'Invalid transaction time.'],
   idempotency_conflict: [409, 'Duplicate transaction id.'],
+  admin_wrong: [401, 'Wrong password.'],
+  admin_locked: [429, 'Too many wrong attempts. Try again in 15 minutes.'],
+  admin_not_configured: [503, 'The admin password is not set up on the server (ADMIN_PASSCODE).'],
+  admin_login_failed: [500, 'Admin sign-in failed on the server.'],
 };
 
 function mapError(e) {
@@ -73,6 +82,35 @@ const actions = {
 
   // Public browser config for the admin page. The anon key is designed to be public; RLS protects the data.
   async config() { return { supabase_url: process.env.SUPABASE_URL || null, supabase_anon_key: process.env.SUPABASE_ANON_KEY || null }; },
+
+  // Admin sign-in with ONE password kept in the server setting ADMIN_PASSCODE (never in code or in the repo).
+  // On success the server opens a Supabase session for the admin user and hands it to the browser, which keeps it in
+  // memory only, so reloading or leaving the page asks for the password again.
+  async admin_login(b, db, ctx) {
+    const pass = process.env.ADMIN_PASSCODE;
+    if (!pass) throw new Error('admin_not_configured');
+    const ip = (ctx && ctx.ip) || 'unknown';
+    if (loginBlocked(ip)) throw new Error('admin_locked');
+    const given = typeof b.password === 'string' ? b.password.slice(0, 200) : '';
+    if (!crypto.timingSafeEqual(Buffer.from(sha(given)), Buffer.from(sha(pass)))) { loginFailed(ip); throw new Error('admin_wrong'); }
+    fails.delete(ip);
+    let email = process.env.ADMIN_EMAIL;
+    if (!email) {
+      const { data, error } = await db.from('admins').select('user_id,email').eq('role', 'admin').order('created_at').limit(1);
+      if (error) throw error;
+      const row = data && data[0];
+      email = row && row.email;
+      if (!email && row) { const u = await db.auth.admin.getUserById(row.user_id); email = u && u.data && u.data.user && u.data.user.email; }
+    }
+    if (!email) throw new Error('admin_not_configured');
+    const { data: link, error: e1 } = await db.auth.admin.generateLink({ type: 'magiclink', email });
+    if (e1 || !link || !link.properties) throw e1 || new Error('admin_login_failed');
+    const { createClient } = require('@supabase/supabase-js');
+    const anon = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
+    const { data: s, error: e2 } = await anon.auth.verifyOtp({ token_hash: link.properties.hashed_token, type: 'magiclink' });
+    if (e2 || !s || !s.session) throw e2 || new Error('admin_login_failed');
+    return { access_token: s.session.access_token, refresh_token: s.session.refresh_token };
+  },
 
   async staff(_b, db) {
     const { data, error } = await db.from('staff').select('id,name').eq('active', true).order('name');
@@ -204,7 +242,7 @@ async function handle(event, dbOverride) {
 
   // optional event access code (set EVENT_ACCESS_CODE to require it for every call except ping)
   const code = process.env.EVENT_ACCESS_CODE;
-  if (code && action !== 'ping' && action !== 'config') {
+  if (code && action !== 'ping' && action !== 'config' && action !== 'admin_login') {
     const given = String(event.headers['x-event-code'] || '');
     const a = Buffer.from(sha(given)), b = Buffer.from(sha(code));
     if (!crypto.timingSafeEqual(a, b)) return reply(401, { error: 'access_code', message: 'Event access code required.' });
@@ -212,7 +250,7 @@ async function handle(event, dbOverride) {
 
   try {
     const db = dbOverride || ((action === 'ping' || action === 'config') ? null : client());
-    return reply(200, await actions[action](body, db));
+    return reply(200, await actions[action](body, db, { ip }));
   } catch (e) {
     const m = mapError(e);
     if (m.status === 500) console.error('api error', action, e && e.message);
