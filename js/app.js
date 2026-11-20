@@ -9,7 +9,7 @@
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const myt = (iso) => new Date(iso).toLocaleString('en-GB', { timeZone: 'Asia/Kuala_Lumpur', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
 
-  const S = { online: navigator.onLine, view: 'boot', session: LS.get('csr.session'), catalog: LS.get('csr.catalog'), staff: [], cart: {}, bundles: [], pay: 'cash', cash: '', msg: '', busy: false, picker: null, summary: null, history: [], codeNeeded: false };
+  const S = { online: navigator.onLine, view: 'boot', session: LS.get('csr.session'), catalog: LS.get('csr.catalog'), staff: [], cart: {}, bundles: [], pay: 'cash', cash: '', msg: '', busy: false, picker: null, open: new Set(), summary: null, history: [], codeNeeded: false };
 
   // ---- connectivity: navigator.onLine is only a hint; a real request decides
   async function probe() { const ok = await Offline.checkBackend(api, 6000); if (ok !== S.online) { S.online = ok; render(); } return ok; }
@@ -119,13 +119,19 @@
     el.append(h('div', { class: 'card' }, h('div', { class: 'bar', style: 'margin:0' }, h('div', {}, h('b', {}, S.session.staff_name), h('div', { class: 'mu' }, 'Shift ' + S.session.business_date)),
       h('div', {}, h('button', { class: 'sm s', onclick: () => { S.view = 'history'; loadHistory(); render(); } }, 'My sales '), ' ', h('button', { class: 'sm s', onclick: () => { S.view = 'summary'; loadSummary(); render(); } }, 'Summary'))), syncBanner(), msg()));
     for (const g of groupByCategory()) {
-      const card = h('div', { class: 'card' }, h('h2', {}, g.name));
-      const grid = h('div', { class: 'grid' });
-      for (const p of g.items) { const q = S.cart[p.id] || 0;
-        grid.append(h('button', { class: 'opt' + (q ? ' on' : ''), onclick: () => { S.cart[p.id] = q + 1; S.msg = ''; render(); } }, p.name, h('small', {}, rm(p.price_cents) + (q ? '  ×' + q : '')))); }
-      card.append(grid);
-      for (const promo of cat.promotions.filter((x) => (x.configuration.eligible_category_ids || []).includes(g.id)))
-        card.append(h('button', { class: 'sm', style: 'width:100%;margin-top:8px', onclick: () => { S.picker = { promo, items: {} }; render(); } }, promo.name + ' — ' + rm(promo.promotional_price_cents)));
+      const open = S.open.has(g.id), inCart = g.items.reduce((a, p) => a + (S.cart[p.id] || 0), 0) + S.bundles.filter((b) => (b.promo.configuration.eligible_category_ids || []).includes(g.id)).length * 0;
+      const card = h('div', { class: 'card' });
+      card.append(h('button', { class: 'opt', style: 'width:100%;display:flex;justify-content:space-between;align-items:center;font-size:17px;font-weight:700', 'aria-expanded': open ? 'true' : 'false',
+        onclick: () => { if (open) S.open.delete(g.id); else S.open.add(g.id); render(); } },
+        h('span', {}, g.name + (inCart ? '  (' + inCart + ' in sale)' : '')), h('span', {}, open ? '▲' : '▼')));
+      if (open) {
+        const grid = h('div', { class: 'grid', style: 'margin-top:10px' });
+        for (const p of g.items) { const q = S.cart[p.id] || 0;
+          grid.append(h('button', { class: 'opt' + (q ? ' on' : ''), onclick: () => { S.cart[p.id] = q + 1; S.msg = ''; render(); } }, p.name, h('small', {}, rm(p.price_cents) + (q ? '  ×' + q : '')))); }
+        card.append(grid);
+        for (const promo of cat.promotions.filter((x) => (x.configuration.eligible_category_ids || []).includes(g.id)))
+          card.append(h('button', { class: 'sm', style: 'width:100%;margin-top:8px', onclick: () => { S.picker = { promo, items: {} }; render(); } }, promo.name + ' — ' + rm(promo.promotional_price_cents)));
+      }
       el.append(card);
     }
     el.append(vCart());
@@ -151,24 +157,26 @@
       h('button', { class: 'opt' + (S.pay === 'duitnow_qr' ? ' on qr' : ''), onclick: () => { S.pay = 'duitnow_qr'; render(); } }, 'DuitNow QR')));
     let chg = null;
     if (S.pay === 'cash') {
-      const i = h('input', { type: 'number', min: '0', step: '0.01', inputmode: 'decimal', placeholder: 'Cash received (RM)', value: S.cash });
-      i.addEventListener('input', () => { S.cash = i.value; const c = cents(i.value); chg.textContent = c == null ? '' : c >= total() ? 'Change: ' + rm(c - total()) : 'Short by ' + rm(total() - c); chg.className = 'msg ' + (c != null && c < total() ? 'err' : 'ok'); btn.disabled = !canPay(); });
-      const c0 = cents(S.cash); chg = h('div', { class: 'msg ' + (c0 != null && c0 < total() ? 'err' : 'ok') }, c0 == null ? '' : c0 >= total() ? 'Change: ' + rm(c0 - total()) : 'Short by ' + rm(total() - c0));
-      card.append(h('div', { class: 'row' }, h('label', {}, 'Received'), i), chg,
+      const i = h('input', { type: 'number', min: '0', step: '0.01', inputmode: 'decimal', placeholder: 'Exact ' + rm(total()) + ' (type only if more)', value: S.cash });
+      i.addEventListener('input', () => { S.cash = i.value; const c = cashVal(); chg.textContent = c == null ? '' : c >= total() ? 'Change: ' + rm(c - total()) : 'Short by ' + rm(total() - c); chg.className = 'msg ' + (c != null && c < total() ? 'err' : 'ok'); btn.disabled = !canPay(); });
+      const c0 = cashVal(); chg = h('div', { class: 'msg ' + (c0 != null && c0 < total() ? 'err' : 'ok') }, c0 == null ? '' : c0 >= total() ? 'Change: ' + rm(c0 - total()) : 'Short by ' + rm(total() - c0));
+      card.append(h('div', { class: 'row' }, h('label', {}, 'Cash given'), i), chg,
         h('div', { style: 'display:flex;gap:6px;flex-wrap:wrap' }, [200, 500, 1000, 2000, 5000].map((n) => h('button', { class: 'sm s', onclick: () => { S.cash = (n / 100).toFixed(2); render(); } }, rm(n)))));
     } else card.append(h('p', { class: 'mu' }, 'Tap "Confirm QR payment" only after you have seen the payment on the customer\'s screen. The system does not verify it with the bank.'));
     const btn = h('button', { class: 'go alt', disabled: !canPay(), onclick: pay }, S.pay === 'cash' ? 'Record cash sale' : 'Confirm QR payment');
     card.append(btn);
     return card;
   }
+  // blank = customer paid the exact amount (no change)
+  const cashVal = () => (S.cash === '' ? total() : cents(S.cash));
   function cents(v) { if (v === '' || v == null) return null; const n = Math.round(parseFloat(v) * 100); return Number.isFinite(n) && n >= 0 ? n : null; }
-  function canPay() { if (empty() || S.busy) return false; if (S.pay === 'cash') { const c = cents(S.cash); return c != null && c >= total(); } return true; }
+  function canPay() { if (empty() || S.busy) return false; if (S.pay === 'cash') { const c = cashVal(); return c != null && c >= total(); } return true; }
   async function pay() {
     if (!canPay()) return; S.busy = true;
-    const rec = { shift_id: S.session.shift_id, token: S.session.token, payment: S.pay, cash_received_cents: S.pay === 'cash' ? cents(S.cash) : null,
+    const rec = { shift_id: S.session.shift_id, token: S.session.token, payment: S.pay, cash_received_cents: S.pay === 'cash' ? cashVal() : null,
       lines: cartLines(), bundles: S.bundles.map((b) => ({ promotion_id: b.promo.id, items: Object.entries(b.items).filter(([, q]) => q).map(([product_id, quantity]) => ({ product_id, quantity })) })),
       display_total_cents: total() };
-    const change = S.pay === 'cash' ? cents(S.cash) - total() : 0;
+    const change = S.pay === 'cash' ? cashVal() - total() : 0;
     try { await queue.add(rec); } catch (e) { S.busy = false; return say('Could not save the sale on this device (' + e.message + '). Do NOT hand over the drinks without writing it down.', 'err'); }
     S.cart = {}; S.bundles = []; S.cash = ''; S.busy = false; S.msg = 'Saved' + (S.pay === 'cash' ? ' — give change ' + rm(change) : '') + '.'; S.msgKind = 'ok'; render();
     syncNow(true);
