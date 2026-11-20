@@ -9,7 +9,8 @@
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const myt = (iso) => new Date(iso).toLocaleString('en-GB', { timeZone: 'Asia/Kuala_Lumpur', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
 
-  const S = { online: navigator.onLine, view: 'boot', session: LS.get('csr.session'), catalog: LS.get('csr.catalog'), staff: [], cart: {}, bundles: [], pay: 'cash', cash: '', msg: '', busy: false, picker: null, open: new Set(), summary: null, history: [], codeNeeded: false };
+  // The shift session is kept in memory only: a refresh/reopen always asks "who is selling?" again.
+  const S = { online: navigator.onLine, view: 'boot', session: null, catalog: LS.get('csr.catalog'), staff: [], cart: {}, bundles: [], pay: 'cash', cash: '', msg: '', busy: false, picker: null, open: new Set(), summary: null, history: [], codeNeeded: false };
 
   // ---- connectivity: navigator.onLine is only a hint; a real request decides
   async function probe() { const ok = await Offline.checkBackend(api, 6000); if (ok !== S.online) { S.online = ok; render(); } return ok; }
@@ -43,7 +44,8 @@
   // ---- boot
   async function boot() {
     await probe();
-    if (S.session) { S.view = S.session.allocated ? 'sell' : 'alloc'; if (S.session.ended) S.view = 'closing'; if (S.online) { loadCatalog().then(() => render()); syncNow(true); } render(); return; }
+    LS.del('csr.session');   // older versions stored the shift token here; it is no longer kept on the device
+    if (S.online) syncNow(false);   // unsent sales from before the refresh keep syncing in the background
     await goStaff();
   }
   async function loadCatalog() { try { S.catalog = await api.catalog(); LS.set('csr.catalog', S.catalog); } catch (e) { handleErr(e); } }
@@ -68,7 +70,12 @@
       try {
         const r = await api.startShift(sel.value);
         S.session = { shift_id: r.shift.id, token: r.token, staff_name: r.staff_name, staff_id: r.shift.staff_id, business_date: r.shift.business_date, status: r.shift.status, allocated: r.shift.status !== 'pending_allocation', ended: ['closing', 'pending_reconciliation', 'closed'].includes(r.shift.status) };
-        LS.set('csr.session', S.session); S.view = S.session.ended ? 'closing' : (S.session.allocated ? 'sell' : 'alloc'); S.msg = r.resumed ? 'Welcome back — your shift was resumed.' : ''; S.msgKind = 'ok';
+        await queue.retoken(r.shift.id, r.token);   // unsent sales of this shift continue with the new token
+        // A resumed shift whose stock is already declared (waiting for the supervisor) goes straight to selling.
+        if (!S.session.allocated) { try { const sm = await api.summary({ shift_id: S.session.shift_id, token: S.session.token }); if (sm && sm.pending_allocation_rows > 0) S.session.allocated = true; } catch (_) {} }
+        S.cart = {}; S.bundles = []; S.history = []; S.summary = null;
+        S.view = S.session.ended ? 'closing' : (S.session.allocated ? 'sell' : 'alloc'); S.msg = r.resumed ? 'Welcome back, ' + r.staff_name + ' — your shift was resumed.' : ''; S.msgKind = 'ok';
+        syncNow(true);
       } catch (e) { S.msg = e.message; S.msgKind = 'err'; }
       S.busy = false; render();
     } }, 'Start Shift');
@@ -91,11 +98,11 @@
         const items = Object.entries(inputs).map(([id, i]) => ({ product_id: id, quantity: parseInt(i.value, 10) || 0 })).filter((x) => x.quantity > 0);
         if (!items.length) return say('Enter at least one product.', 'err');
         ev.target.disabled = true;
-        try { await api.declareAllocation({ shift_id: S.session.shift_id, token: S.session.token, batch_id: Offline.uuid(), items }); S.session.allocated = true; LS.set('csr.session', S.session); S.view = 'sell'; S.msg = 'Stock submitted. The supervisor will confirm it.'; S.msgKind = 'ok'; }
+        try { await api.declareAllocation({ shift_id: S.session.shift_id, token: S.session.token, batch_id: Offline.uuid(), items }); S.session.allocated = true; S.view = 'sell'; S.msg = 'Stock submitted. The supervisor will confirm it.'; S.msgKind = 'ok'; }
         catch (e) { S.msg = e.message; S.msgKind = 'err'; if (e.code === 'invalid_shift') return resetSession(); }
         render();
       } }, 'Submit stock'),
-      h('button', { class: 'sm', style: 'margin-top:10px;width:100%', onclick: () => { S.session.allocated = true; LS.set('csr.session', S.session); S.view = 'sell'; render(); } }, 'Skip — I received no stock yet'),
+      h('button', { class: 'sm', style: 'margin-top:10px;width:100%', onclick: () => { S.session.allocated = true; S.view = 'sell'; render(); } }, 'Skip — I received no stock yet'),
       msg());
     return card;
   }
@@ -238,7 +245,7 @@
     const n = await queue.pendingCount(S.session.shift_id);
     if (n) return say('You still have ' + n + ' unsynced sale(s). Connect to the internet and wait until they show "Synced", then end the shift.', 'err');
     if (!S.online) return say('You must be online to end the shift.', 'err');
-    try { S.summary = await api.endShift({ shift_id: S.session.shift_id, token: S.session.token }); S.session.ended = true; LS.set('csr.session', S.session); S.view = 'closing'; S.msg = ''; }
+    try { S.summary = await api.endShift({ shift_id: S.session.shift_id, token: S.session.token }); S.session.ended = true; S.view = 'closing'; S.msg = ''; }
     catch (e) { S.msg = e.message; S.msgKind = 'err'; }
     render();
   }

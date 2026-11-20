@@ -70,7 +70,14 @@
     }
     // A sale that the server rejected permanently can be retried after the cause is fixed (e.g. promoter restarted the shift).
     async function retryFailed(key, patch) { const r = await get(key); if (r && r.status === 'failed') { await put({ ...r, ...(patch || {}), status: 'pending', next_at: 0, error: null }); emit(); } }
-    return { add, sync, all, get, pendingCount, retryFailed, onChange: (f) => { listeners.add(f); return () => listeners.delete(f); }, _put: put };
+    // After the promoter picks their name again the server issues a NEW shift token (the old one stops working).
+    // Give every unsent sale of that shift the new token, and re-arm the ones the server refused only because of the old token.
+    async function retoken(shiftId, token) {
+      const rows = (await all()).filter((r) => r.shift_id === shiftId && r.token !== token && (['local', 'pending', 'syncing'].includes(r.status) || (r.status === 'failed' && r.error_code === 'invalid_shift')));
+      for (const r of rows) await put(r.status === 'failed' ? { ...r, token, status: 'pending', next_at: 0, error: null, error_code: null } : { ...r, token });
+      if (rows.length) emit(); return rows.length;
+    }
+    return { add, sync, all, get, pendingCount, retryFailed, retoken, onChange: (f) => { listeners.add(f); return () => listeners.delete(f); }, _put: put };
   }
 
   // Real connectivity check (navigator.onLine alone is not trusted)
