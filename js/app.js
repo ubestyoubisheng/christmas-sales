@@ -228,8 +228,8 @@
     if (!sm) { card.append(h('p', { class: 'mu' }, S.online ? 'Loading…' : 'Offline — summary needs a connection.')); return card; }
     const t = sm.totals;
     card.append(h('div', { class: 'kpi' }, h('div', {}, 'Sales', h('b', {}, t.sales_count)), h('div', {}, 'Total', h('b', {}, rm(t.total_cents))), h('div', {}, 'Cash', h('b', {}, rm(t.cash_cents))), h('div', {}, 'QR', h('b', {}, rm(t.qr_cents)))),
-      t.review_count ? h('p', { class: 'warn' }, t.review_count + ' sale(s) need supervisor review and are not counted above.') : null,
-      sm.pending_allocation_rows ? h('p', { class: 'warn' }, 'Some of your received stock is still waiting for supervisor confirmation.') : null,
+      t.review_count ? h('p', { class: 'warn' }, t.review_count + ' sale(s) need supervisor review and are not counted above.') : '',
+      sm.pending_allocation_rows ? h('p', { class: 'warn' }, 'Some of your received stock is still waiting for supervisor confirmation.') : '',
       h('div', { style: 'height:10px' }), summaryTable(sm),
       h('button', { class: 'go red', onclick: startEnd }, 'End Shift'));
     return card;
