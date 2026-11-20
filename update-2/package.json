@@ -1,0 +1,22 @@
+{
+  "name": "christmas-sales-recorder",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Christmas Market POS: Netlify + Supabase",
+  "scripts": {
+    "test": "node --test tests/db.test.js tests/api.test.js tests/offline.test.js tests/pdf.test.js",
+    "test:db": "node --test tests/db.test.js",
+    "test:api": "node --test tests/api.test.js",
+    "test:offline": "node --test tests/offline.test.js",
+    "e2e": "node e2e/ui_smoke.js && node e2e/admin_smoke.js && node e2e/pdf_flow.js",
+    "test:pdf": "node --test tests/pdf.test.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0"
+  },
+  "devDependencies": {
+    "fake-indexeddb": "^6.2.8",
+    "pg": "^8.23.1",
+    "playwright": "^1.48.0"
+  }
+}
