@@ -89,7 +89,7 @@
     const inputs = {};
     const groups = groupByCategory();
     const card = h('div', { class: 'card' }, h('h2', {}, 'Stock you received for this shift'),
-      h('p', { class: 'mu' }, 'Enter how many you physically received. The supervisor confirms the numbers before they count as your stock. Leave 0 for items you did not receive.'),
+      h('p', { class: 'mu' }, 'Enter how many you physically took. It is recorded as your stock straight away; everything is checked again when you end the shift. Leave 0 for items you did not take.'),
       groups.map((g) => h('div', {}, h('h2', { style: 'margin-top:12px' }, g.name), g.items.map((p) => {
         const i = h('input', { type: 'number', min: '0', inputmode: 'numeric', value: '0' }); inputs[p.id] = i;
         return h('div', { class: 'row' }, h('label', { style: 'flex:1 1 55%;color:inherit' }, p.name), i);
@@ -98,11 +98,11 @@
         const items = Object.entries(inputs).map(([id, i]) => ({ product_id: id, quantity: parseInt(i.value, 10) || 0 })).filter((x) => x.quantity > 0);
         if (!items.length) return say('Enter at least one product.', 'err');
         ev.target.disabled = true;
-        try { await api.declareAllocation({ shift_id: S.session.shift_id, token: S.session.token, batch_id: Offline.uuid(), items }); S.session.allocated = true; S.view = 'sell'; S.msg = 'Stock submitted. The supervisor will confirm it.'; S.msgKind = 'ok'; }
+        try { const d = await api.declareAllocation({ shift_id: S.session.shift_id, token: S.session.token, batch_id: Offline.uuid(), items }); S.session.allocated = true; S.view = 'sell'; S.msg = d && d.pending_rows ? 'Stock recorded, but some items are waiting for the supervisor because the warehouse does not have enough.' : 'Stock recorded.'; S.msgKind = d && d.pending_rows ? 'err' : 'ok'; }
         catch (e) { S.msg = e.message; S.msgKind = 'err'; if (e.code === 'invalid_shift') return resetSession(); }
         render();
       } }, 'Submit stock'),
-      h('button', { class: 'sm', style: 'margin-top:10px;width:100%', onclick: () => { S.session.allocated = true; S.view = 'sell'; render(); } }, 'Skip — I received no stock yet'),
+      h('button', { class: 'sm', style: 'margin-top:10px;width:100%', onclick: () => { S.session.allocated = true; S.view = 'sell'; render(); } }, 'Skip — I took no stock yet'),
       msg());
     return card;
   }
