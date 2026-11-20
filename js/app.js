@@ -246,7 +246,10 @@
     const sm = S.summary; if (!sm) { loadSummary().then(() => render()); return h('p', { class: 'mu' }, 'Loading…'); }
     const done = sm.cash && sm.cash.declared_cash_cents != null; const inputs = {};
     const card = h('div', { class: 'card' }, h('h2', {}, 'End of shift — count and hand in'));
-    if (done) { card.append(h('p', { class: 'ok' }, 'Your count has been submitted. Hand the stock and cash to the supervisor.'), summaryTable(sm), h('button', { class: 'go', onclick: finish }, 'Finish')); return card; }
+    if (done) { card.append(h('p', { class: 'ok' }, 'Your count has been submitted. Hand the stock and cash to the supervisor.'), summaryTable(sm),
+      h('p', { class: 'mu' }, 'Download your daily summary PDF (money, stock in/out, every sale). After the download the app returns to the start screen, ready for tomorrow.'),
+      h('button', { class: 'go alt', id: 'dl', onclick: downloadAndFinish }, 'Download daily summary PDF & finish'), msg(),
+      h('button', { class: 'sm', style: 'width:100%;margin-top:10px', onclick: finish }, 'Finish without PDF')); return card; }
     card.append(h('p', { class: 'mu' }, 'Count every drink you still hold and enter the real number, then count your cash. Enter 0 where nothing is left.'));
     for (const p of sm.products) { const i = h('input', { type: 'number', min: '0', inputmode: 'numeric', placeholder: '0' }); inputs[p.product_id] = i; card.append(h('div', { class: 'row' }, h('label', { style: 'flex:1 1 55%;color:inherit' }, p.name), i)); }
     const cash = h('input', { type: 'number', min: '0', step: '0.01', inputmode: 'decimal', placeholder: 'Cash in hand (RM)' });
@@ -261,7 +264,18 @@
       } }, 'Submit count'), msg());
     return card;
   }
-  async function finish() { const n = await queue.pendingCount(S.session.shift_id); if (n) return say('Unsynced sales remain on this device.', 'err'); LS.del('csr.session'); S.session = null; S.summary = null; S.view = 'done'; render(); }
+  async function finish() { const n = await queue.pendingCount(S.session.shift_id); if (n) return say('Unsynced sales remain on this device. Connect to the internet first.', 'err'); LS.del('csr.session'); S.session = null; S.summary = null; S.cart = {}; S.bundles = []; S.history = []; S.open = new Set(); S.msg = ''; goStaff(); }
+  async function downloadAndFinish(ev) {
+    const btn = ev.currentTarget; const n = await queue.pendingCount(S.session.shift_id);
+    if (n) return say(n + ' sale(s) are not synced yet, so the PDF would be incomplete. Connect to the internet and wait until they are synced.', 'err');
+    btn.disabled = true; btn.textContent = 'Preparing PDF…';
+    try {
+      const rep = await api.shiftReport({ shift_id: S.session.shift_id, token: S.session.token });
+      const bytes = Reports.shiftReport(rep); const name = 'Daily-Summary_' + rep.shift.business_date + '_' + rep.staff_name.replace(/[^A-Za-z0-9]+/g, '-') + '.pdf';
+      if (!Pdf.save(bytes, name)) throw new Error('This browser could not save the PDF.');
+    } catch (e) { btn.disabled = false; btn.textContent = 'Download daily summary PDF & finish'; return say('Could not create the PDF: ' + e.message + ' You can try again.', 'err'); }
+    setTimeout(finish, 1200);
+  }
   function vDone() { return h('div', { class: 'card' }, h('h2', {}, 'Shift submitted'), h('p', {}, 'Thank you. Your supervisor will confirm your stock and cash.'), h('button', { class: 'go', onclick: goStaff }, 'Back to start')); }
 
   boot();

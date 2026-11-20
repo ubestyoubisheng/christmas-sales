@@ -46,10 +46,10 @@
   function stopLive() { if (rt) { sb.removeChannel(rt); rt = null; } if (poll) clearInterval(poll); poll = null; }
   function setLive() { const el = document.getElementById('live'); if (el) { el.textContent = live === 'realtime' ? 'Live' : 'Auto-refresh 30s'; el.className = 'pill ' + (live === 'realtime' ? 'online' : 'pending'); } }
 
-  const TABS = [['overview', 'Overview'], ['sales', 'Sales'], ['inventory', 'Inventory'], ['shifts', 'Shifts & cash'], ['settings', 'Settings'], ['export', 'Export']];
+  const TABS = [['overview', 'Overview'], ['sales', 'Sales'], ['inventory', 'Inventory'], ['shifts', 'Shifts & cash'], ['settings', 'Settings'], ['export', 'Export'], ['cleanup', 'Clean-up']];
   async function show(quiet) {
     const body = h('div', {}); let view;
-    try { view = await ({ overview: vOverview, sales: vSales, inventory: vInventory, shifts: vShifts, settings: vSettings, export: vExport }[tab])(); } catch (e) { view = h('p', { class: 'err' }, e.message); }
+    try { view = await ({ overview: vOverview, sales: vSales, inventory: vInventory, shifts: vShifts, settings: vSettings, export: vExport, cleanup: vCleanup }[tab])(); } catch (e) { view = h('p', { class: 'err' }, e.message); }
     const y = window.scrollY;
     $app.replaceChildren(h('div', { class: 'bar' }, h('h1', {}, 'Christmas Sales — Admin'), h('span', {}, h('span', { id: 'live', class: 'pill pending' }, ''), ' ', h('span', { class: 'mu' }, role + ' · ' + (user.email || '')), ' ', h('button', { class: 'sm s', onclick: () => sb.auth.signOut() }, 'Sign out'))),
       h('div', { class: 'tabs' }, TABS.map(([k, l]) => h('button', { class: 'sm' + (k === tab ? ' on' : ''), onclick: () => { tab = k; show(); } }, l))), h('div', { id: 'flash', class: 'msg' }), view);
@@ -62,7 +62,8 @@
     const d = await rpc('admin_dashboard', { p_date: date });
     const dateIn = h('input', { type: 'date', value: d.date, style: 'width:auto', onchange: (e) => { date = e.target.value || null; show(); } });
     const t = d.totals, el = h('div', {});
-    el.append(h('div', { class: 'card' }, h('div', { class: 'bar' }, h('h2', { style: 'margin:0' }, 'Business date'), dateIn),
+    const dl = h('button', { class: 'sm', onclick: async (ev) => { ev.currentTarget.disabled = true; try { const tot = await rpc('admin_daily_total', { p_date: date }); if (!Pdf.save(Reports.adminDaily(tot), 'Daily-Total_' + tot.date + '.pdf')) throw new Error('Could not save the PDF.'); note('PDF downloaded.'); } catch (e) { note(e.message, 'err'); } ev.currentTarget.disabled = false; } }, 'Download daily total (PDF)');
+    el.append(h('div', { class: 'card' }, h('div', { class: 'bar' }, h('h2', { style: 'margin:0' }, 'Business date'), h('span', {}, dateIn, ' ', dl)),
       h('div', { class: 'kpi', style: 'grid-template-columns:repeat(auto-fit,minmax(130px,1fr))' }, kpi('Revenue', rm(t.revenue_cents)), kpi('Cash', rm(t.cash_cents)), kpi('DuitNow QR', rm(t.qr_cents)), kpi('Transactions', t.transactions), kpi('Units sold', t.units_sold), kpi('Active shifts', d.active_shifts), kpi('Need review', d.review_count, d.review_count > 0), kpi('Stock differences', d.open_stock_differences, d.open_stock_differences > 0)),
       h('div', { class: 'mu' }, 'Generated ' + myt(d.generated_at) + '. "QR" is what promoters confirmed; it is not verified with the bank.')));
     el.append(h('div', { class: 'card' }, h('h2', {}, 'By promoter'), table(['Promoter', 'Sales', 'Cash', 'QR', 'Total'], d.by_promoter.map((p) => [p.name, p.transactions, rm(p.cash_cents), rm(p.qr_cents), rm(p.revenue_cents)]))));
@@ -158,14 +159,14 @@
     const write = (fn) => async () => { try { const { error } = await fn(); if (error) throw new Error(error.message); note('Saved.'); show(); } catch (e) { note(e.message, 'err'); } };
     // staff
     const nn = h('input', { type: 'text', placeholder: 'New promoter name', maxlength: '80' });
-    el.append(h('div', { class: 'card' }, h('h2', {}, 'Promoters'), staff.map((s) => h('div', { class: 'line' }, s.name, h('button', { class: 'sm s', onclick: write(() => sb.from('staff').update({ active: !s.active }).eq('id', s.id)) }, s.active ? 'Active — deactivate' : 'Inactive — activate'))), h('div', { class: 'row' }, nn, h('button', { class: 'sm', onclick: write(() => sb.from('staff').insert({ name: nn.value.trim() })) }, 'Add'))));
+    el.append(h('div', { class: 'card' }, h('h2', {}, 'Promoters'), staff.map((s) => h('div', { class: 'line' }, s.name, h('button', { class: 'sm s', onclick: write(() => sb.from('staff').update({ active: !s.active }).eq('id', s.id)) }, s.active ? 'Active — deactivate' : 'Inactive — activate'), ' ', h('button', { class: 'sm s bad', onclick: async () => { if (!confirm('Delete promoter ' + s.name + '? Only possible if they have no shifts.')) return; const { error } = await sb.from('staff').delete().eq('id', s.id); if (error) note(/foreign key|violates/i.test(error.message) ? s.name + ' has shifts/sales, so cannot be deleted. Deactivate instead, or delete their shifts in Clean-up first.' : error.message, 'err'); else { note('Deleted.'); show(); } } }, 'Delete'))), h('div', { class: 'row' }, nn, h('button', { class: 'sm', onclick: write(() => sb.from('staff').insert({ name: nn.value.trim() })) }, 'Add'))));
     // categories
     const cn = h('input', { type: 'text', placeholder: 'New category name' });
     el.append(h('div', { class: 'card' }, h('h2', {}, 'Categories'), cats.map((c) => h('div', { class: 'line' }, c.name)), h('div', { class: 'row' }, cn, h('button', { class: 'sm', onclick: write(() => sb.from('categories').insert({ name: cn.value.trim() })) }, 'Add'))));
     // products
     const pn = h('input', { type: 'text', placeholder: 'Product name' }), pp = h('input', { type: 'number', step: '0.01', placeholder: 'Price RM' }), pc = h('select', {}, cats.map((c) => h('option', { value: c.id }, c.name)));
     el.append(h('div', { class: 'card' }, h('h2', {}, 'Products and prices'), h('p', { class: 'mu' }, 'A price change only affects new sales; old sales keep the price they were sold at.'),
-      prods.map((p) => { const pr = h('input', { type: 'number', step: '0.01', value: (p.price_cents / 100).toFixed(2), style: 'width:100px' }); return h('div', { class: 'line' }, h('span', {}, p.name + (p.active ? '' : ' (inactive)')), h('span', {}, pr, ' ', h('button', { class: 'sm s', onclick: write(() => sb.from('products').update({ price_cents: q(pr.value) }).eq('id', p.id)) }, 'Save price'), ' ', h('button', { class: 'sm s', onclick: write(() => sb.from('products').update({ active: !p.active }).eq('id', p.id)) }, p.active ? 'Hide' : 'Show'))); }),
+      prods.map((p) => { const pr = h('input', { type: 'number', step: '0.01', value: (p.price_cents / 100).toFixed(2), style: 'width:100px' }); return h('div', { class: 'line' }, h('span', {}, p.name + (p.active ? '' : ' (inactive)')), h('span', {}, pr, ' ', h('button', { class: 'sm s', onclick: write(() => sb.from('products').update({ price_cents: q(pr.value) }).eq('id', p.id)) }, 'Save price'), ' ', h('button', { class: 'sm s', onclick: write(() => sb.from('products').update({ active: !p.active }).eq('id', p.id)) }, p.active ? 'Hide' : 'Show'), ' ', h('button', { class: 'sm s bad', onclick: async () => { if (!confirm('Delete product ' + p.name + '? Only possible if it was never used.')) return; const { error } = await sb.from('products').delete().eq('id', p.id); if (error) note(/foreign key|violates/i.test(error.message) ? p.name + ' has been used in sales or stock, so cannot be deleted. Use Hide instead.' : error.message, 'err'); else { note('Deleted.'); show(); } } }, 'Delete'))); }),
       h('h2', { style: 'margin-top:14px' }, 'Add product'), pn, h('div', { style: 'height:6px' }), pp, h('div', { style: 'height:6px' }), pc, h('button', { class: 'go', onclick: write(() => sb.from('products').insert({ name: pn.value.trim(), price_cents: q(pp.value), category_id: pc.value })) }, 'Add product')));
     // promotions
     el.append(h('div', { class: 'card' }, h('h2', {}, 'Promotions'), promos.map((p) => {
@@ -173,6 +174,32 @@
       const cfg = p.configuration || {}; const elig = h('div', { class: 'mu' }, 'Bundle size ' + cfg.bundle_size + ' · eligible categories: ' + (cfg.eligible_category_ids || []).map((id) => (cats.find((c) => c.id === id) || {}).name).join(', ') + (cfg.eligible_product_ids && cfg.eligible_product_ids.length ? ' · products: ' + cfg.eligible_product_ids.map((id) => (prods.find((x) => x.id === id) || {}).name).join(', ') : ''));
       return h('div', { class: 'box' }, h('b', {}, p.name + (p.active ? '' : ' (off)')), elig, h('div', { class: 'row' }, pr, h('button', { class: 'sm', onclick: write(() => sb.from('promotions').update({ promotional_price_cents: q(pr.value) }).eq('id', p.id)) }, 'Save price'), h('button', { class: 'sm', onclick: write(() => sb.from('promotions').update({ active: !p.active }).eq('id', p.id)) }, p.active ? 'Turn off' : 'Turn on')));
     }), h('p', { class: 'mu' }, 'To change which drinks are eligible, edit promotions.configuration in Supabase (see README).')));
+    return el;
+  }
+
+
+  // ---- Clean-up: delete test data (admin role only; the database enforces this too)
+  async function vCleanup() {
+    if (!owner()) return h('div', { class: 'card' }, h('p', { class: 'mu' }, 'Only an admin (not a supervisor) can delete data.'));
+    const shifts = await sel('shifts', (t) => t.select('id,business_date,status,started_at,staff(name),sales(id,status,total_cents)').order('started_at', { ascending: false }).limit(60));
+    const el = h('div', {});
+    el.append(h('div', { class: 'card' }, h('h2', {}, 'Delete one shift'), h('p', { class: 'mu' }, 'Removes the shift with all its sales, counts and cash record. Stock given to it goes back to the warehouse. This cannot be undone (a record that you deleted it, with the totals, stays in the audit log). To cancel a single wrong sale, use Void in the Sales tab instead.'),
+      !shifts.length ? h('p', { class: 'mu' }, 'No shifts.') : shifts.map((sh) => {
+        const conf = sh.sales.filter((x) => x.status === 'confirmed'), tot = conf.reduce((a, x) => a + x.total_cents, 0);
+        const why = h('input', { type: 'text', placeholder: 'Reason (e.g. test shift)', style: 'flex:1 1 160px' }); let armed = false;
+        const b = h('button', { class: 'sm' }, 'Delete shift');
+        b.addEventListener('click', async () => {
+          if (!armed) { armed = true; b.textContent = 'Click again to confirm'; b.className = 'sm bad'; setTimeout(() => { armed = false; b.textContent = 'Delete shift'; b.className = 'sm'; }, 6000); return; }
+          b.disabled = true; try { await rpc('admin_delete_shift', { p_shift_id: sh.id, p_reason: why.value }); note('Shift deleted.'); show(); } catch (e) { note(e.message, 'err'); b.disabled = false; armed = false; b.textContent = 'Delete shift'; b.className = 'sm'; }
+        });
+        return h('div', { class: 'line', style: 'flex-wrap:wrap' }, h('span', {}, sh.staff.name + ' · ' + sh.business_date + ' · ' + sh.status + ' · ' + sh.sales.length + ' sale(s) · ' + rm(tot)), h('span', { style: 'display:flex;gap:6px;flex:1 1 280px;justify-content:flex-end' }, why, b));
+      })));
+    const conf = h('input', { type: 'text', placeholder: 'Type DELETE ALL SALES' }), wh = h('input', { type: 'checkbox' });
+    const go = h('button', { class: 'go red' }, 'Delete ALL sales and shifts');
+    go.addEventListener('click', async () => { go.disabled = true; try { const r = await rpc('admin_reset_test_data', { p_confirm: conf.value.trim(), p_keep_warehouse: !wh.checked }); note('Deleted ' + r.sales_deleted + ' sale(s) and ' + r.shifts_deleted + ' shift(s).'); show(); } catch (e) { note(e.message === 'confirmation_required' ? 'Type DELETE ALL SALES exactly to confirm.' : e.message, 'err'); go.disabled = false; } });
+    el.append(h('div', { class: 'card' }, h('h2', {}, 'Delete ALL test data'), h('p', { class: 'mu' }, 'Use this before the market opens. It deletes every sale, shift, stock count and cash record. It KEEPS products, prices, promotions, promoters and administrators. Stock given to promoters goes back to the warehouse. Promoters with an open shift on their phone will have to start again.'),
+      h('label', { style: 'display:block;margin:8px 0' }, wh, ' Also set the warehouse stock back to zero (you will need to record the real stock again)'), conf, go));
+    el.append(h('div', { class: 'card' }, h('h2', {}, 'Promoters and products'), h('p', { class: 'mu' }, 'In Settings you can hide or deactivate a promoter or product. People and products that already have sales stay in the records so old reports remain correct; to remove them completely, delete their shifts here first and then delete them in Settings.')));
     return el;
   }
 

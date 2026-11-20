@@ -23,7 +23,7 @@
       startShift: (staff_id) => call('start_shift', { staff_id }),
       declareAllocation: (b) => call('declare_allocation', b), createSale: (b) => call('create_sale', b, 20000),
       mySales: (b) => call('my_sales', b), summary: (b) => call('shift_summary', b),
-      endShift: (b) => call('end_shift', b), submitClosing: (b) => call('submit_closing', b),
+      shiftReport: (b) => call('shift_report', b), endShift: (b) => call('end_shift', b), submitClosing: (b) => call('submit_closing', b),
     };
   }
   const out = { createApi };
