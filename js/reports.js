@@ -61,8 +61,8 @@
     doc.table([{ h: 'Product', w: 0.3 }, { h: 'Category', w: 0.13 }, { h: 'Sold', w: 0.09, align: 'r' }, { h: 'Sales', w: 0.16, align: 'r' }, { h: 'Warehouse left', w: 0.16, align: 'r' }, { h: 'With promoters', w: 0.16, align: 'r' }],
       [...P.map((p) => [p.name, p.category, p.sold, rm(p.sold_cents), p.warehouse_left, p.with_promoters]), { bold: true, cells: ['TOTAL', '', s('sold'), rm(P.reduce((a, p) => a + p.sold_cents, 0)), s('warehouse_left'), s('with_promoters')] }]);
     doc.heading('By promoter');
-    doc.table([{ h: 'Promoter', w: 0.19 }, { h: 'Shift', w: 0.15 }, { h: 'Sales', w: 0.07, align: 'r' }, { h: 'Cash', w: 0.13, align: 'r' }, { h: 'QR', w: 0.13, align: 'r' }, { h: 'Total', w: 0.13, align: 'r' }, { h: 'Cash declared', w: 0.2, align: 'r' }],
-      d.promoters.map((p) => [p.name, p.shift_status.replace(/_/g, ' '), p.sales_count, rm(p.cash_cents), rm(p.qr_cents), rm(p.total_cents), p.cash_declared_cents == null ? '-' : rm(p.cash_declared_cents)]));
+    doc.table([{ h: 'Promoter', w: 0.17 }, { h: 'Start', w: 0.08 }, { h: 'End', w: 0.08 }, { h: 'Shift', w: 0.12 }, { h: 'Sales', w: 0.07, align: 'r' }, { h: 'Cash', w: 0.12, align: 'r' }, { h: 'QR', w: 0.11, align: 'r' }, { h: 'Total', w: 0.12, align: 'r' }, { h: 'Cash declared', w: 0.13, align: 'r' }],
+      d.promoters.map((p) => [p.name, tm(p.started_at), p.ended_at ? tm(p.ended_at) : 'working', p.shift_status.replace(/_/g, ' '), p.sales_count, rm(p.cash_cents), rm(p.qr_cents), rm(p.total_cents), p.cash_declared_cents == null ? '-' : rm(p.cash_declared_cents)]));
     return doc.finish();
   }
   const out = { shiftReport, adminDaily };

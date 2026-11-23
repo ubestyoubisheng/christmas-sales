@@ -2,11 +2,14 @@
 (function () {
   'use strict';
   const $app = document.getElementById('app');
+  // compact category rows on the selling screen: one slim bar each, products show only when opened
+  document.head.appendChild(Object.assign(document.createElement('style'), { textContent: '.card.cat{border:0;padding:0;margin-bottom:6px;background:transparent}.cathead{min-height:0;padding:8px 12px;border-radius:9px}.card.cat .grid{margin-top:8px}' }));
   const LS = { get(k) { try { return JSON.parse(localStorage.getItem(k)); } catch (_) { return null; } }, set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (_) {} }, del(k) { try { localStorage.removeItem(k); } catch (_) {} } };
   const api = CsrApi.createApi({ getAccessCode: () => LS.get('csr.code') || '' });
   const queue = Offline.createQueue({ api });
   const rm = (c) => 'RM ' + (c / 100).toFixed(2);
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const hm = (iso) => iso ? new Date(iso).toLocaleTimeString('en-GB', { timeZone: 'Asia/Kuala_Lumpur', hour: '2-digit', minute: '2-digit', hour12: false }) : '';
   const myt = (iso) => new Date(iso).toLocaleString('en-GB', { timeZone: 'Asia/Kuala_Lumpur', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
 
   // The shift session is kept in memory only: a refresh/reopen always asks "who is selling?" again.
@@ -15,7 +18,9 @@
   // ---- connectivity: navigator.onLine is only a hint; a real request decides
   async function probe() { const ok = await Offline.checkBackend(api, 6000); if (ok !== S.online) { S.online = ok; render(); } return ok; }
   async function syncNow(force) { if (!(await probe())) return; await queue.sync(force); render(); if (S.view === 'history') loadHistory(); }
-  setInterval(() => { if (!document.hidden) syncNow(false); }, 15000);
+  // every 60 s (was 15 s): keeps the Online/Offline badge and retries unsent sales, with 4x fewer requests (saves Netlify credits).
+  // Unsent sales are also retried at once when the app comes back to the foreground or the network returns (events below).
+  setInterval(() => { if (!document.hidden) syncNow(false); }, 60000);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) syncNow(true); });
   window.addEventListener('online', () => syncNow(true)); window.addEventListener('offline', () => { S.online = false; render(); });
   queue.onChange(() => { if (S.view === 'sell' || S.view === 'history') render(); });
@@ -69,7 +74,7 @@
       if (!sel.value || S.busy) return; S.busy = true; btn.disabled = true;
       try {
         const r = await api.startShift(sel.value);
-        S.session = { shift_id: r.shift.id, token: r.token, staff_name: r.staff_name, staff_id: r.shift.staff_id, business_date: r.shift.business_date, status: r.shift.status, allocated: r.shift.status !== 'pending_allocation', ended: ['closing', 'pending_reconciliation', 'closed'].includes(r.shift.status) };
+        S.session = { shift_id: r.shift.id, token: r.token, staff_name: r.staff_name, staff_id: r.shift.staff_id, business_date: r.shift.business_date, started_at: r.shift.started_at, status: r.shift.status, allocated: r.shift.status !== 'pending_allocation', ended: ['closing', 'pending_reconciliation', 'closed'].includes(r.shift.status) };
         await queue.retoken(r.shift.id, r.token);   // unsent sales of this shift continue with the new token
         // A resumed shift whose stock is already declared (waiting for the supervisor) goes straight to selling.
         if (!S.session.allocated) { try { const sm = await api.summary({ shift_id: S.session.shift_id, token: S.session.token }); if (sm && sm.pending_allocation_rows > 0) S.session.allocated = true; } catch (_) {} }
@@ -123,12 +128,12 @@
     const cat = S.catalog; if (!cat) return h('p', { class: 'err' }, 'Product list not loaded. Connect to the internet once.');
     if (S.picker) return vPicker();
     const el = h('div', {});
-    el.append(h('div', { class: 'card' }, h('div', { class: 'bar', style: 'margin:0' }, h('div', {}, h('b', {}, S.session.staff_name), h('div', { class: 'mu' }, 'Shift ' + S.session.business_date)),
+    el.append(h('div', { class: 'card' }, h('div', { class: 'bar', style: 'margin:0' }, h('div', {}, h('b', {}, S.session.staff_name), h('div', { class: 'mu' }, 'Shift ' + S.session.business_date + (S.session.started_at ? ' · started ' + hm(S.session.started_at) : ''))),
       h('div', {}, h('button', { class: 'sm s', onclick: () => { S.view = 'history'; loadHistory(); render(); } }, 'My sales '), ' ', h('button', { class: 'sm s', onclick: () => { S.view = 'summary'; loadSummary(); render(); } }, 'Summary'))), syncBanner(), msg()));
     for (const g of groupByCategory()) {
       const open = S.open.has(g.id), inCart = g.items.reduce((a, p) => a + (S.cart[p.id] || 0), 0) + S.bundles.filter((b) => (b.promo.configuration.eligible_category_ids || []).includes(g.id)).length * 0;
-      const card = h('div', { class: 'card' });
-      card.append(h('button', { class: 'opt', style: 'width:100%;display:flex;justify-content:space-between;align-items:center;font-size:17px;font-weight:700', 'aria-expanded': open ? 'true' : 'false',
+      const card = h('div', { class: 'card cat' });
+      card.append(h('button', { class: 'opt cathead', style: 'width:100%;display:flex;justify-content:space-between;align-items:center;font-size:15px;font-weight:700', 'aria-expanded': open ? 'true' : 'false',
         onclick: () => { if (open) S.open.delete(g.id); else S.open.add(g.id); render(); } },
         h('span', {}, g.name + (inCart ? '  (' + inCart + ' in sale)' : '')), h('span', {}, open ? '▲' : '▼')));
       if (open) {
@@ -238,7 +243,7 @@
       t.review_count ? h('p', { class: 'warn' }, t.review_count + ' sale(s) need supervisor review and are not counted above.') : '',
       sm.pending_allocation_rows ? h('p', { class: 'warn' }, 'Some of your received stock is still waiting for supervisor confirmation.') : '',
       h('div', { style: 'height:10px' }), summaryTable(sm),
-      h('button', { class: 'go red', onclick: startEnd }, 'End Shift'));
+      h('button', { class: 'go red', onclick: startEnd }, 'End Shift'), msg());
     return card;
   }
   async function startEnd() {
@@ -253,7 +258,7 @@
     const sm = S.summary; if (!sm) { loadSummary().then(() => render()); return h('p', { class: 'mu' }, 'Loading…'); }
     const done = sm.cash && sm.cash.declared_cash_cents != null; const inputs = {};
     const card = h('div', { class: 'card' }, h('h2', {}, 'End of shift — count and hand in'));
-    if (done) { card.append(h('p', { class: 'ok' }, 'Your count has been submitted. Hand the stock and cash to the supervisor.'), summaryTable(sm),
+    if (done) { card.append(h('p', { class: 'ok' }, 'Your count and cash are recorded and your shift is closed. Please hand your cash and any remaining stock to your supervisor.'), summaryTable(sm),
       h('p', { class: 'mu' }, 'Download your daily summary PDF (money, stock in/out, every sale). After the download the app returns to the start screen, ready for tomorrow.'),
       h('button', { class: 'go alt', id: 'dl', onclick: downloadAndFinish }, 'Download daily summary PDF & finish'), msg(),
       h('button', { class: 'sm', style: 'width:100%;margin-top:10px', onclick: finish }, 'Finish without PDF')); return card; }
@@ -283,7 +288,7 @@
     } catch (e) { btn.disabled = false; btn.textContent = 'Download daily summary PDF & finish'; return say('Could not create the PDF: ' + e.message + ' You can try again.', 'err'); }
     setTimeout(finish, 1200);
   }
-  function vDone() { return h('div', { class: 'card' }, h('h2', {}, 'Shift submitted'), h('p', {}, 'Thank you. Your supervisor will confirm your stock and cash.'), h('button', { class: 'go', onclick: goStaff }, 'Back to start')); }
+  function vDone() { return h('div', { class: 'card' }, h('h2', {}, 'Shift submitted'), h('p', {}, 'Thank you. Your shift is closed.'), h('button', { class: 'go', onclick: goStaff }, 'Back to start')); }
 
   boot();
 })();

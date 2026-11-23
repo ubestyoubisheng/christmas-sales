@@ -3,12 +3,16 @@
   'use strict';
   const $app = document.getElementById('app'); let sb, user, role = null, tab = 'overview', date = null, rt = null, poll = null, live = 'connecting';
   const rm = (c) => 'RM ' + ((c || 0) / 100).toFixed(2);
+  const hm = (iso) => iso ? new Date(iso).toLocaleTimeString('en-GB', { timeZone: 'Asia/Kuala_Lumpur', hour: '2-digit', minute: '2-digit', hour12: false }) : '';
+  const dtm = (iso) => iso ? new Date(iso).toLocaleString('en-CA', { timeZone: 'Asia/Kuala_Lumpur', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).replace(',', '') : '';
   const myt = (iso) => iso ? new Date(iso).toLocaleString('en-GB', { timeZone: 'Asia/Kuala_Lumpur', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
   const q = (c) => { const n = Math.round(parseFloat(c) * 100); return Number.isFinite(n) ? n : null; };
   function h(tag, a, ...k) { const e = document.createElement(tag); for (const [x, v] of Object.entries(a || {})) { if (x === 'class') e.className = v; else if (x.startsWith('on')) e.addEventListener(x.slice(2), v); else if (v === true) e.setAttribute(x, ''); else if (v !== false && v != null) e.setAttribute(x, v); } for (const c of k.flat()) if (c != null && c !== false) e.append(c.nodeType ? c : document.createTextNode(String(c))); return e; }
   const table = (head, rows) => { const t = h('table', {}, h('tr', {}, head.map((x) => h('th', {}, x)))); rows.forEach((r) => t.append(h('tr', {}, r.map((c) => h('td', {}, c))))); return h('div', { class: 'wrap' }, t); };
   const note = (m, k) => { const el = document.getElementById('flash'); if (el) { el.textContent = m; el.className = 'msg ' + (k || 'ok'); } };
   const rpc = async (fn, args) => { const { data, error } = await sb.rpc(fn, args || {}); if (error) throw new Error(error.message); return data; };
+  // Supabase returns at most 1000 rows per request: read big lists page by page so exports are never cut off.
+  const rpcAll = async (fn, args) => { const out = []; for (let from = 0; ; from += 1000) { const { data, error } = await sb.rpc(fn, args || {}).range(from, from + 999); if (error) throw new Error(error.message); out.push(...data); if (data.length < 1000) break; } return out; };
   const sel = async (t, f) => { const { data, error } = await f(sb.from(t)); if (error) throw new Error(error.message); return data; };
   const act = (fn, okMsg) => async (ev) => { const btn = ev.currentTarget; btn.disabled = true; try { await fn(); note(okMsg || 'Done.'); await show(); } catch (e) { note(e.message, 'err'); btn.disabled = false; } };
 
@@ -74,11 +78,15 @@
     const d = await rpc('admin_dashboard', { p_date: date });
     const dateIn = h('input', { type: 'date', value: d.date, style: 'width:auto', onchange: (e) => { date = e.target.value || null; show(); } });
     const t = d.totals, el = h('div', {});
+    el.append(await attentionCard());
     const dl = h('button', { class: 'sm', onclick: async (ev) => { ev.currentTarget.disabled = true; try { const tot = await rpc('admin_daily_total', { p_date: date }); if (!Pdf.save(Reports.adminDaily(tot), 'Daily-Total_' + tot.date + '.pdf')) throw new Error('Could not save the PDF.'); note('PDF downloaded.'); } catch (e) { note(e.message, 'err'); } ev.currentTarget.disabled = false; } }, 'Download daily total (PDF)');
     el.append(h('div', { class: 'card' }, h('div', { class: 'bar' }, h('h2', { style: 'margin:0' }, 'Business date'), h('span', {}, dateIn, ' ', dl)),
       h('div', { class: 'kpi', style: 'grid-template-columns:repeat(auto-fit,minmax(130px,1fr))' }, kpi('Revenue', rm(t.revenue_cents)), kpi('Cash', rm(t.cash_cents)), kpi('DuitNow QR', rm(t.qr_cents)), kpi('Transactions', t.transactions), kpi('Units sold', t.units_sold), kpi('Active shifts', d.active_shifts), kpi('Need review', d.review_count, d.review_count > 0), kpi('Stock differences', d.open_stock_differences, d.open_stock_differences > 0)),
       h('div', { class: 'mu' }, 'Generated ' + myt(d.generated_at) + '. "QR" is what promoters confirmed; it is not verified with the bank.')));
-    el.append(h('div', { class: 'card' }, h('h2', {}, 'By promoter'), table(['Promoter', 'Sales', 'Cash', 'QR', 'Total'], d.by_promoter.map((p) => [p.name, p.transactions, rm(p.cash_cents), rm(p.qr_cents), rm(p.revenue_cents)]))));
+    // start / end time of each promoter's shift(s) that day (malaysia time)
+    const shs = await sel('shifts', (t2) => t2.select('started_at,ended_at,staff(name)').eq('business_date', d.date));
+    const tm = {}; for (const x of shs) { const o = tm[x.staff.name] = tm[x.staff.name] || { start: x.started_at, end: x.ended_at, open: false }; if (x.started_at < o.start) o.start = x.started_at; if (!x.ended_at) o.open = true; else if (!o.end || x.ended_at > o.end) o.end = x.ended_at; }
+    el.append(h('div', { class: 'card' }, h('h2', {}, 'By promoter'), table(['Promoter', 'Start', 'End', 'Sales', 'Cash', 'QR', 'Total'], d.by_promoter.map((p) => { const o = tm[p.name]; return [p.name, o ? hm(o.start) : '-', o ? (o.open ? 'working' : hm(o.end) || '-') : '-', p.transactions, rm(p.cash_cents), rm(p.qr_cents), rm(p.revenue_cents)]; }))));
     el.append(h('div', { class: 'card' }, h('h2', {}, 'By product'), table(['Product', 'Category', 'Units', 'Revenue'], d.by_product.map((p) => [p.name, p.category, p.units, rm(p.revenue_cents)]))));
     el.append(h('div', { class: 'card' }, h('h2', {}, 'By category'), table(['Category', 'Units', 'Revenue'], d.by_category.map((p) => [p.category, p.units, rm(p.revenue_cents)]))));
     el.append(h('div', { class: 'card' }, h('h2', {}, 'Last 14 days'), table(['Date', 'Sales', 'Revenue'], d.trend.map((x) => [x.date, x.transactions, rm(x.revenue_cents)]))));
@@ -87,10 +95,34 @@
   }
   const kpi = (l, v, bad) => h('div', {}, l, h('b', { class: bad ? 'bad' : '' }, v));
 
+  // ---- red "needs attention" (shifts close themselves; the system only points at what looks wrong)
+  const flagBits = (a) => {
+    const bits = [];
+    (a.stock_differences || []).forEach((x) => bits.push('Stock: ' + x.product + ' expected ' + x.expected + ', counted ' + x.counted + ' (' + x.difference + ')'));
+    if (a.cash_difference_cents != null) bits.push('Cash difference ' + rm(a.cash_difference_cents) + ' (handed in vs. sold)');
+    if (a.sales_in_review) bits.push(a.sales_in_review + ' sale(s) waiting for review (Sales tab)');
+    if (a.pending_allocations) bits.push('Stock request waiting: the warehouse did not have enough (Inventory tab)');
+    if (a.count_not_submitted) bits.push('Shift ended but the count was not submitted');
+    return bits;
+  };
+  const hasStockOrCash = (a) => (a.stock_differences || []).length > 0 || a.cash_difference_cents != null;
+  async function attentionCard() {
+    const list = await rpc('admin_attention');
+    if (!list.length) return h('div', { class: 'card' }, h('b', { class: 'ok' }, 'Nothing needs attention.'));
+    const note1 = h('input', { type: 'text', placeholder: 'One note for "Acknowledge all" (min 3 characters)' });
+    const allBtn = h('button', { class: 'sm', onclick: act(async () => { for (const a of list) if (hasStockOrCash(a)) await rpc('admin_acknowledge_shift_flags', { p_shift_id: a.shift_id, p_note: note1.value }); }, 'Stock and cash flags acknowledged.') }, 'Acknowledge all stock and cash flags');
+    return h('div', { class: 'card', style: 'border:2px solid var(--dn);background:#fff5f4' }, h('h2', { class: 'bad' }, 'Needs attention (' + list.length + ')'),
+      list.map((a) => h('div', { class: 'line', style: 'flex-direction:column;align-items:flex-start' }, h('b', { class: 'bad' }, a.name + ' · ' + a.business_date + ' (' + a.status + ')'), flagBits(a).map((b) => h('div', { class: 'bad' }, '• ' + b)))),
+      h('div', { class: 'row' }, note1, allBtn),
+      h('p', { class: 'mu' }, 'Shifts close by themselves when the promoter submits. Everything is already booked; these are only things the system noticed. You do not have to act on each one.'));
+  }
+
   // ---- Sales (+ review queue)
   async function vSales() {
     const rows = await sel('sales', (t) => t.select('id,sale_number,occurred_at,business_date,payment_method,status,total_cents,review_reason,staff(name),shifts(status)').order('occurred_at', { ascending: false }).limit(300));
-    const el = h('div', {}); const rev = rows.filter((r) => r.status === 'requires_review');
+    // review items come from their own query: they must never be hidden just because they are older than the latest 300 sales
+    const rev = await sel('sales', (t) => t.select('id,sale_number,occurred_at,business_date,payment_method,status,total_cents,review_reason,staff(name),shifts(status)').eq('status', 'requires_review').order('occurred_at', { ascending: false }).limit(1000));
+    const el = h('div', {});
     if (rev.length) el.append(h('div', { class: 'card' }, h('h2', {}, 'Sales that need review (' + rev.length + ')'), h('p', { class: 'mu' }, 'These were recorded offline but the promoter did not have enough stock when they synced. Approve = count the sale and take the stock from the promoter; Void = cancel the sale. Either way you must write a short note.'),
       rev.map((r) => { const nt = h('input', { type: 'text', placeholder: 'Note (min 3 characters)' }); const a = h('button', { class: 'sm', onclick: act(() => rpc('admin_resolve_sale', { p_sale_id: r.id, p_action: 'approve', p_note: nt.value }), 'Sale approved.') }, 'Approve'); const v = h('button', { class: 'sm', onclick: act(() => rpc('admin_resolve_sale', { p_sale_id: r.id, p_action: 'void', p_note: nt.value }), 'Sale voided.') }, 'Void');
         return h('div', { class: 'line', style: 'flex-wrap:wrap' }, h('span', {}, r.sale_number + ' · ' + r.staff.name + ' · ' + rm(r.total_cents) + ' · ' + r.review_reason), nt, a, v); })));
@@ -130,8 +162,10 @@
   async function vShifts() {
     const shifts = await sel('shifts', (t) => t.select('id,business_date,status,started_at,ended_at,staff(name)').order('started_at', { ascending: false }).limit(40));
     const el = h('div', {});
+    const att = Object.fromEntries((await rpc('admin_attention')).map((a) => [a.shift_id, a]));
     for (const s of shifts) {
-      const box = h('div', { class: 'card' }, h('div', { class: 'bar', style: 'margin:0' }, h('b', {}, s.staff.name + ' · ' + s.business_date), h('span', { class: 'pill ' + (s.status === 'closed' ? 'synced' : 'pending') }, s.status)));
+      const box = h('div', { class: 'card', style: att[s.id] ? 'border:2px solid var(--dn);background:#fff5f4' : '' }, h('div', { class: 'bar', style: 'margin:0' }, h('b', { class: att[s.id] ? 'bad' : '' }, s.staff.name + ' · ' + s.business_date + ' · ' + hm(s.started_at) + ' – ' + (hm(s.ended_at) || 'working')), h('span', { class: 'pill ' + (s.status === 'closed' ? 'synced' : 'pending') }, s.status)));
+      if (att[s.id]) box.append(...flagBits(att[s.id]).map((b) => h('div', { class: 'bad' }, '• ' + b)));
       if (s.status !== 'closed') {
         const [cl, counts, cs, bal] = await Promise.all([rpc('admin_shift_closing_status', { p_shift_id: s.id }), sel('stock_counts', (t) => t.select('product_id,expected_quantity,actual_quantity,difference,products(name)').eq('shift_id', s.id)), sel('cash_settlements', (t) => t.select('*').eq('shift_id', s.id).maybeSingle()),
           sel('stock_movements', (t) => t.select('product_id,quantity_change,products(name)').eq('shift_id', s.id).eq('location', 'shift'))]);
@@ -220,10 +254,15 @@
   function download(name, rows) { const blob = new Blob(['﻿' + rows.map((r) => r.map(csvCell).join(',')).join('\r\n')], { type: 'text/csv;charset=utf-8' }); const a = h('a', { href: URL.createObjectURL(blob), download: name }); document.body.append(a); a.click(); a.remove(); }
   async function vExport() {
     const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kuala_Lumpur' }); const f = h('input', { type: 'date', value: today }), t = h('input', { type: 'date', value: today });
-    const mk = (label, fn, name, cols, map) => h('button', { class: 'go', onclick: async (ev) => { ev.target.disabled = true; try { const rows = await rpc(fn, { p_from: f.value, p_to: t.value }); download(name + '_' + f.value + '_' + t.value + '.csv', [cols, ...rows.map(map)]); note('Downloaded ' + rows.length + ' rows.'); } catch (e) { note(e.message, 'err'); } ev.target.disabled = false; } }, label);
+    const mk = (label, fn, name, cols, map) => h('button', { class: 'go', onclick: async (ev) => { ev.target.disabled = true; try { const rows = await rpcAll(fn, { p_from: f.value, p_to: t.value }); download(name + '_' + f.value + '_' + t.value + '.csv', [cols, ...rows.map(map)]); note('Downloaded ' + rows.length + ' rows.'); } catch (e) { note(e.message, 'err'); } ev.target.disabled = false; } }, label);
+    const rm2 = (c) => (c / 100).toFixed(2);
     return h('div', { class: 'card' }, h('h2', {}, 'CSV export (business dates, Asia/Kuala_Lumpur)'), h('div', { class: 'row' }, h('label', {}, 'From'), f), h('div', { class: 'row' }, h('label', {}, 'To'), t),
-      mk('Sales (every transaction)', 'admin_report_sales', 'sales', ['Date', 'Sale no', 'Time', 'Promoter', 'Payment', 'Status', 'Subtotal RM', 'Discount RM', 'Total RM', 'Items'], (r) => [r.business_date, r.sale_number, r.occurred_at, r.promoter, r.payment_method, r.status, (r.subtotal_cents / 100).toFixed(2), (r.discount_cents / 100).toFixed(2), (r.total_cents / 100).toFixed(2), r.items]),
+      h('p', { class: 'mu' }, 'Start here: totals per promoter. Only confirmed sales are counted.'),
+      mk('Sales per promoter, per day (totals)', 'admin_report_promoter_days', 'promoter-days', ['Date', 'Promoter', 'First start', 'Last end', 'Sales', 'Units', 'Cash RM', 'QR RM', 'Discount RM', 'Total RM'], (r) => [r.business_date, r.promoter, dtm(r.first_start), dtm(r.last_end), r.sales_count, r.units, rm2(r.cash_cents), rm2(r.qr_cents), rm2(r.discount_cents), rm2(r.total_cents)]),
+      mk('Units per promoter and product', 'admin_report_promoter_products', 'promoter-products', ['Date', 'Promoter', 'Category', 'Product', 'Units', 'Revenue RM'], (r) => [r.business_date, r.promoter, r.category, r.product, r.units, rm2(r.revenue_cents)]),
       mk('Products sold', 'admin_report_products', 'products', ['Date', 'Category', 'Product', 'Units', 'Revenue RM'], (r) => [r.business_date, r.category, r.product, r.units, (r.revenue_cents / 100).toFixed(2)]),
+      h('p', { class: 'mu', style: 'margin-top:14px' }, 'Optional, large file: one line per transaction.'),
+      mk('All transactions (large)', 'admin_report_sales', 'sales', ['Date', 'Sale no', 'Time', 'Promoter', 'Payment', 'Status', 'Subtotal RM', 'Discount RM', 'Total RM', 'Items'], (r) => [r.business_date, r.sale_number, r.occurred_at, r.promoter, r.payment_method, r.status, (r.subtotal_cents / 100).toFixed(2), (r.discount_cents / 100).toFixed(2), (r.total_cents / 100).toFixed(2), r.items]),
       mk('Shifts & cash', 'admin_report_shifts', 'shifts', ['Date', 'Promoter', 'Shift status', 'Started', 'Ended', 'Revenue RM', 'Cash expected RM', 'Declared RM', 'Received RM', 'Difference RM', 'Cash status'], (r) => [r.business_date, r.promoter, r.shift_status, r.started_at, r.ended_at, (r.revenue_cents / 100).toFixed(2), r.cash_expected_cents == null ? '' : (r.cash_expected_cents / 100).toFixed(2), r.cash_declared_cents == null ? '' : (r.cash_declared_cents / 100).toFixed(2), r.cash_received_cents == null ? '' : (r.cash_received_cents / 100).toFixed(2), r.cash_difference_cents == null ? '' : (r.cash_difference_cents / 100).toFixed(2), r.cash_status]));
   }
   boot();
